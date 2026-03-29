@@ -1,22 +1,46 @@
 from typing import List, Dict
-from langchain.agents import AgentExecutor, initialize_agent
-from langchain.tools import BaseTool, StructuredTool
-from langchain.schema.messages import HumanMessage, SystemMessage
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-from langchain.callbacks.base import CallbackManager
-from langchain.callbacks.stdout_callback_handler import StdOutCallbackHandler
 from langchain_openai import ChatOpenAI
+from langchain.agents import AgentExecutor, initialize_agent
+from langchain.tools import tool
+from langchain.schema.messages import HumanMessage, SystemMessage
 from pydantic import SecretStr
+import pandas as pd
 
-class GetPriceTool(BaseTool):
-    name = "get_price"
-    description = (
-        "Используется для получения цены конкретного товара в определённом городе."
-    )
 
-    def _run(self, product: str, city: str) -> str:
-        prompt_template = """
-            Ты эксперт по ценам товаров в разных городах России.
-            Назови среднюю цену {product} в городе {city}.
-            Форматируй ответ в виде таблицы Markdown:
+llm = ChatOpenAI(
+    model='gpt-3.5-turbo',
+    base_url='http://localhost:1234/v1',
+    api_key=SecretStr('fake'),
+    temperature=0.7,
+)
+
+
+@tool
+def get_price(product: str, city: str) -> str:
+    """
+    Получение цены на указанный продукт в конкретном городе.
+    Возвращает таблицу с ценами и магазинами.
+    """
+    df = pd.DataFrame([
+        {'Продукт': product, 'Цена (руб.)': '89', 'Магазин': 'Магнит'},
+        {'Продукт': product, 'Цена (руб.)': '45', 'Магазин': 'Пятёрочка'},
+        {'Продукт': product, 'Цена (руб.)': '120/кг', 'Магазин': 'Перекрёсток'}
+    ])
+    return df.to_markdown(index=False)
+
+
+tools = [get_price]
+system_prompt = 'Ты помощник по планированию покупок.'
+
+agent_executor = initialize_agent(
+    tools=tools,
+    llm=llm,
+    agent='zero-shot-react-description',
+    verbose=True,
+    handle_parsing_errors=True,
+    system_message=SystemMessage(content=system_prompt)
+)
+
+question = "Помоги составить список покупок: молоко, хлеб, яблоки. Я нахожусь в Казани."
+response = agent_executor.invoke({"input": question})
+print(response['output'])
