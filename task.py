@@ -1,11 +1,39 @@
 from typing import List, Dict
+from langchain.agents import AgentExecutor, initialize_agent
+from langchain.tools import BaseTool, StructuredTool
+from langchain.schema.messages import HumanMessage, SystemMessage
+from langchain.prompts import MessagesPlaceholder
+from langchain.callbacks.stdout_callback import StdOutCallbackHandler
 from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, create_agent
-from langchain.tools import tool
 from pydantic import SecretStr
 import pandas as pd
 
-# Локальная модель через OpenAI совместимый API
+class GetPriceTool(BaseTool):
+    name = "get_price"
+    description = (
+        "Используется для получения цены конкретного товара в конкретном городе."
+    )
+
+    def _run(self, product: str, city: str) -> str:
+        df = pd.DataFrame([
+            {'Продукт': product, 'Цена (руб.)': self._generate_random_price(), 'Магазин': self._random_store()}
+        ])
+        return df.to_markdown(index=False)
+    
+    async def _arun(self, *args, **kwargs):
+        raise NotImplementedError("This method is not implemented.")
+
+    @staticmethod
+    def _generate_random_price():
+        return round(float(f'{int(60 + 100*abs(hash(str((id(GetPriceTool), id(pd))))) % 100):.{2}f}'), 2)
+
+    @staticmethod
+    def _random_store():
+        stores = ["Магнит", "Пятёрочка", "Перекрёсток"]
+        return stores[int(abs(hash(str(id(stores)))) % len(stores))]
+
+tools = [GetPriceTool()]
+
 llm = ChatOpenAI(
     model='gpt-3.5-turbo',
     base_url='http://localhost:1234/v1',
@@ -13,51 +41,26 @@ llm = ChatOpenAI(
     temperature=0.7,
 )
 
-# Инструмент get_price с субагентом внутри
-@tool
-def get_price(product: str, city: str) -> str:
-    """
-    Получение цены на указанный продукт в конкретном городе.
-    Возвращает таблицу с ценами и магазинами.
-    """
-    sub_agent = create_agent(
-        model=llm,
-        tools=[],
-        system_prompt=f"Генерируй реалистичные цены на {product} в городе {city}. Верни результат в формате таблицы.",
-    )
-    answer = sub_agent.invoke({"messages": [{"role": "system", "content": ""}]})
-    df = pd.read_json(answer['messages'][0].content, orient='records')
-    return df.to_markdown(index=False)
+system_prompt = """
+Ты помощник по планированию покупок. 
+Пользователь задает запрос со списком товаров и городом, а ты предоставляешь информацию о стоимости этих товаров в данном городе.
+"""
 
-# Основной агент
-agent = create_agent(
-    model=llm,
-    tools=[get_price],
-    system_prompt="Ты помощник по планированию покупок."
-)
-
-# Функция вывода всех шагов выполнения запроса
-def print_messages(messages: List[Dict]):
-    for msg in messages:
-        content = msg.get('content')
-        if content is not None and len(content.strip()) > 0:
-            print(f"\n---\n{content}\n---")
-        else:
-            tool_call = msg.get('tool_calls')
-            if tool_call:
-                name = tool_call[0]['function']['name']
-                args = tool_call[0]['function'].get('arguments', {})
-                print(f"\n---\n{name}({args})\n---")
-
-# Тестовый запрос
-question = {
-    "messages": [
-        {"role": "human", "content": "Помоги составить список покупок: молоко, хлеб, яблоки. Я нахожусь в Казани."},
-    ],
+agent_kwargs = {
+    "extra_prompt_messages": [MessagesPlaceholder(variable_name="memory")],
 }
 
-# Выполнение запроса
-response = agent.invoke(question)
-print_messages(response['intermediate_steps'])
-final_answer = response['messages'][-1]
-print("\nФинальный ответ:\n", final_answer.content)
+agent_executor = initialize_agent(
+    tools,
+    llm,
+    agent="chat-conversational-react-description",
+    verbose=True,
+    memory=None,
+    agent_kwargs=agent_kwargs,
+    handle_parsing_errors=True,
+)
+
+question = "Помоги составить список покупок: молоко, хлеб, яблоки. Я нахожусь в Казани."
+
+response = agent_executor.run(question)
+print(response)
