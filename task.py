@@ -1,12 +1,12 @@
 from typing import List, Dict
 from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, initialize_agent
+from langchain.agents import AgentExecutor, create_agent
+from langchain.schema.messages import SystemMessage
 from langchain.tools import tool
-from langchain.schema.messages import HumanMessage, SystemMessage
 from pydantic import SecretStr
 import pandas as pd
 
-
+# Локальная модель через OpenAI совместимый API
 llm = ChatOpenAI(
     model='gpt-3.5-turbo',
     base_url='http://localhost:1234/v1',
@@ -14,33 +14,36 @@ llm = ChatOpenAI(
     temperature=0.7,
 )
 
-
+# Инструмент get_price с субагентом внутри
 @tool
 def get_price(product: str, city: str) -> str:
     """
     Получение цены на указанный продукт в конкретном городе.
     Возвращает таблицу с ценами и магазинами.
     """
-    df = pd.DataFrame([
-        {'Продукт': product, 'Цена (руб.)': '89', 'Магазин': 'Магнит'},
-        {'Продукт': product, 'Цена (руб.)': '45', 'Магазин': 'Пятёрочка'},
-        {'Продукт': product, 'Цена (руб.)': '120/кг', 'Магазин': 'Перекрёсток'}
-    ])
+    subagent = create_agent(
+        model=llm,
+        tools=[],
+        system_prompt=f"Генерируй реалистичные цены на {product} в {city}. Верни таблицу.",
+    )
+    answer = subagent.invoke({"messages": [{"role": "human", "content": product}]})
+    df = pd.read_json(answer['messages'][0].content)
     return df.to_markdown(index=False)
 
+# Список продуктов для примера
+products = ["молоко", "хлеб", "яблоки"]
+city = "Казань"
 
+# Формирование запроса пользователю
+query = f"Помогите составить список покупок: {', '.join(products)}. Я нахожусь в {city}."
+
+# Основной агент
+system_prompt = "Ты помощник по планированию покупок."
 tools = [get_price]
-system_prompt = 'Ты помощник по планированию покупок.'
+agent = create_agent(model=llm, tools=tools, system_prompt=system_prompt)
 
-agent_executor = initialize_agent(
-    tools=tools,
-    llm=llm,
-    agent='zero-shot-react-description',
-    verbose=True,
-    handle_parsing_errors=True,
-    system_message=SystemMessage(content=system_prompt)
-)
+# Выполнение запроса
+response = agent.invoke({"messages": [SystemMessage(content=query)]})
+final_answer = response['messages'][-1].content
 
-question = "Помоги составить список покупок: молоко, хлеб, яблоки. Я нахожусь в Казани."
-response = agent_executor.invoke({"input": question})
-print(response['output'])
+print(final_answer)
